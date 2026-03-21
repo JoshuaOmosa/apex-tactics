@@ -1,0 +1,22 @@
+[gd_scene format=3 uid="uid://cdyvdhf6bcl3u"]
+
+[ext_resource type="Script" uid="uid://dpkv0m110pxva" path="res://src/actor.gd" id="1_0k4hp"]
+[ext_resource type="Texture2D" uid="uid://m8e56qbdgrki" path="res://assets/icon.svg" id="1_afts6"]
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_tqr47"]
+radius = 10.29563
+
+[node name="Actor" type="CharacterBody2D" unique_id=1628278104]
+position = Vector2(218, 30)
+motion_mode = 1
+script = ExtResource("1_0k4hp")
+
+[node name="Sprite2D" type="Sprite2D" parent="." unique_id=1127515031]
+position = Vector2(0, 7)
+texture = ExtResource("1_afts6")
+
+[node name="NavigationAgent2D" type="NavigationAgent2D" parent="." unique_id=1409612333]
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="." unique_id=1132591472]
+position = Vector2(2, 41)
+shape = SubResource("CircleShape2D_tqr47")
