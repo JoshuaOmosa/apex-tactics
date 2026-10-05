@@ -11,7 +11,7 @@ config_version=5
 [application]
 
 config/name="ApexTactics"
-run/main_scene="uid://cdyvdhf6bcl3u"
+run/main_scene="uid://xadoct2alt5c"
 config/features=PackedStringArray("4.6", "Forward Plus")
 config/icon="res://assets/icon.svg"
 

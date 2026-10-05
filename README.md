@@ -1,11 +1,11 @@
 # ApexTactics | 2D Tactical Pathfinding
 
-A small **Godot 4** project demonstrating point-and-click movement driven by Godot's navigation system. Click anywhere on the map and the actor computes a path across a navigation mesh and walks to the target.
+The movement foundation for a tactics game in Godot 4: click anywhere on the map and the unit finds a route **around obstacles** using Godot's navigation server, steering with local avoidance so several units can share the map.
 
-![Engine](https://img.shields.io/badge/engine-Godot%204.6-478cbf)
-![Language](https://img.shields.io/badge/language-GDScript-355570)
-![Renderer](https://img.shields.io/badge/renderer-Forward%2B-lightgrey)
-![Status](https://img.shields.io/badge/status-prototype-orange)
+![Godot](https://img.shields.io/badge/Godot-4.6-478cbf)
+![Language](https://img.shields.io/badge/GDScript-typed-blue)
+![Navigation](https://img.shields.io/badge/navigation-NavigationServer2D-green)
+![License](https://img.shields.io/badge/license-MIT-blue)
 
 ---
 
@@ -20,24 +20,20 @@ A small **Godot 4** project demonstrating point-and-click movement driven by God
 7. [Project Structure](#7-project-structure)
 8. [Code Walkthrough](#8-code-walkthrough)
 9. [Configuration Reference](#9-configuration-reference)
-10. [Known Issues](#10-known-issues)
-11. [Extending the Project](#11-extending-the-project)
-12. [Roadmap](#12-roadmap)
-13. [License](#13-license)
+10. [Extending the Project](#10-extending-the-project)
+11. [Roadmap](#11-roadmap)
+12. [License](#12-license)
 
 ---
 
 ## 1. Overview
 
-ApexTactics is the foundation for a tactics-style game. It focuses on three building blocks:
-
-| Goal | Implementation | Status |
-|---|---|---|
-| Intelligent pathfinding | `NavigationAgent2D` on the actor, `NavigationRegion2D` with a `NavigationPolygon` in the level | Working |
-| Point-and-click movement | Mouse click in `main.gd`, vector-math steering in `actor.gd` | Working |
-| Grid-based environment | `TileMapLayer` holding a 17 x 14 tile grid | Visual only (see [Known Issues](#10-known-issues)) |
-
-The whole project is two scripts and two scenes, which makes it easy to read end to end and to build on.
+| Building block | Implementation |
+|---|---|
+| Pathfinding around obstacles | `NavigationRegion2D` whose mesh covers the whole tile grid, with a hole where the stone block sits |
+| Point-and-click orders | Left-click to move, right-click to stop, with a marker at the reachable destination |
+| Local avoidance | `NavigationAgent2D.avoidance_enabled` with the `velocity_computed` callback, ready for multiple units |
+| Grid-based level | `TileMapLayer`: 238 tiles on a 17 × 14 grid |
 
 ---
 
@@ -45,17 +41,15 @@ The whole project is two scripts and two scenes, which makes it easy to read end
 
 ### 2.1 Scene tree
 
-`Main.tscn` is the level. It instances `Actor.tscn` as a child.
-
 ```mermaid
 flowchart TD
     Main["Main<br/>Node2D<br/>main.gd"]
-    Region["NavigationRegion2D<br/>walkable area"]
+    Region["NavigationRegion2D<br/>walkable mesh"]
     Tiles["TileMapLayer<br/>238 tiles"]
     Actor["Actor<br/>CharacterBody2D<br/>actor.gd"]
-    Sprite["Sprite2D<br/>icon.svg"]
-    Agent["NavigationAgent2D<br/>path finder"]
-    Shape["CollisionShape2D<br/>circle, radius ~10"]
+    Sprite["Sprite2D"]
+    Agent["NavigationAgent2D<br/>avoidance on"]
+    Shape["CollisionShape2D"]
 
     Main --> Region
     Main --> Actor
@@ -69,26 +63,32 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    Mouse["Mouse click"] --> M["main.gd<br/>reads click position"]
-    M -->|"set_target(pos)"| A["actor.gd<br/>steering"]
+    Mouse["Mouse click"] --> M["main.gd<br/>orders + marker"]
+    M -->|"set_target(pos) / stop()"| A["actor.gd"]
     A -->|"target_position"| N["NavigationAgent2D"]
-    N -->|"queries"| S["NavigationServer2D<br/>Godot engine"]
-    R["NavigationRegion2D<br/>polygon"] -->|"registers map"| S
-    S -->|"path points"| N
-    N -->|"next position"| A
-    A -->|"velocity + move_and_slide"| Body["Actor moves"]
+    R["NavigationRegion2D"] -->|"registers mesh"| S["NavigationServer2D"]
+    N <-->|"path query"| S
+    N -->|"next waypoint"| A
+    A -->|"proposed velocity"| N
+    N -->|"velocity_computed(safe)"| A
+    A -.->|"arrived"| M
 ```
 
-### 2.3 Navigation data
+### 2.3 Navigation mesh
 
-The walkable area comes from a single `NavigationPolygon` resource on the region node. The tiles do not currently contribute to it.
+The mesh is a rectangle covering the full tile grid (x −16…256, y −80…144 in region space) with a hole over the stone block's bounding box (x 16…96, y −16…64). It's split into four convex polygons around the hole:
 
-```mermaid
-flowchart LR
-    P["NavigationPolygon<br/>one quad, about 114 x 114 px"] --> R["NavigationRegion2D"]
-    R --> S["NavigationServer2D"]
-    S --> Q["Path queries<br/>from the agent"]
+```text
++-------------------------------+
+|             top               |
+|      +-------------+          |
+| left |   (block)   |  right   |
+|      +-------------+          |
+|            bottom             |
++-------------------------------+
 ```
+
+Because the hole isn't walkable, a click on the far side of the block makes the actor walk around it, and a click *inside* the block sends the actor to the nearest edge (shown by the marker).
 
 ---
 
@@ -102,115 +102,68 @@ sequenceDiagram
     participant M as main.gd
     participant A as actor.gd
     participant N as NavigationAgent2D
-    U->>M: Mouse button pressed
-    M->>M: get_global_mouse_position()
-    M->>A: set_target(position)
-    A->>N: target_position = position
-    loop every physics frame
-        A->>N: is_navigation_finished()?
-        N-->>A: false
+    U->>M: Left click
+    M->>A: set_target(mouse position)
+    A->>N: target_position = ...
+    M->>A: final_destination()
+    M->>M: draw marker
+    loop every physics frame until finished
         A->>N: get_next_path_position()
-        N-->>A: next waypoint
-        A->>A: direction = toward waypoint, normalized
-        A->>A: velocity = direction * speed
+        A->>N: velocity = direction * speed
+        N-->>A: velocity_computed(safe_velocity)
         A->>A: move_and_slide()
     end
-    N-->>A: navigation finished
-    A->>A: stop issuing movement
+    N-->>A: navigation_finished
+    A-->>M: arrived
+    M->>M: clear marker
 ```
 
-### 3.2 The per-frame decision
-
-This is the entire logic of `_physics_process` in `actor.gd`:
-
-```mermaid
-flowchart TD
-    Start(["Physics frame"]) --> Fin{"Navigation<br/>finished?"}
-    Fin -->|Yes| Ret(["Return<br/>no movement code runs"])
-    Fin -->|No| Next["Get next path position"]
-    Next --> Dir["direction = (next - position).normalized()"]
-    Dir --> Vel["velocity = direction * speed"]
-    Vel --> Move["move_and_slide()"]
-    Move --> End(["End frame"])
-```
-
-### 3.3 Vector math
-
-Steering is a single normalize-and-scale step:
+### 3.2 Steering
 
 ```text
-direction = (next_path_position - global_position).normalized()
-velocity  = direction * speed          # speed = 300 px/s
+proposed  = global_position.direction_to(next_waypoint) * speed     # 300 px/s
+velocity  = safe_velocity from the avoidance system
 ```
 
-`normalized()` gives a unit vector pointing at the next waypoint, and multiplying by `speed` makes the actor move at a constant 300 pixels per second regardless of distance. `move_and_slide()` applies the velocity and handles collisions.
+The path is queried **once per physics frame**, as Godot recommends. With avoidance on, the agent proposes a velocity and the navigation server returns one adjusted to avoid other agents. With a single actor the two are the same.
 
-### 3.4 The level layout
+### 3.3 Level layout
 
-The `TileMapLayer` contains 238 tiles on a 17 x 14 grid (columns -1 to 15, rows -5 to 8). Two tile variants are used: 215 of one and 23 of another. The second variant forms a block in the upper left (`#` below, `.` is the first variant):
+238 tiles on a 17 × 14 grid (columns −1…15, rows −5…8). 23 stone tiles form the block in the upper left (`#`):
 
 ```text
    x: -1 0 1 2 3 4 5 6 ... 15
-y=-5   . . . . . . . . ...  .
-y=-4   . . . . . . . . ...  .
-y=-3   . . . . . . . . ...  .
-y=-2   . . . . . . . . ...  .
 y=-1   . . # # # # # . ...  .
 y= 0   . . # # # # # . ...  .
 y= 1   . . # # # # # . ...  .
 y= 2   . . . # # # # . ...  .
 y= 3   . . . # # # # . ...  .
-y= 4   . . . . . . . . ...  .
-...
-y= 8   . . . . . . . . ...  .
 ```
-
-The navigation polygon covers roughly x 49 to 166 and y -42 to 72 in world pixels, a much smaller area than the tile grid.
 
 ---
 
 ## 4. Requirements
 
-- **Godot 4.6** (the project file lists the `4.6` feature tag, and the scene files use the newer `unique_id` format)
-- A GPU supported by the **Forward+** renderer
-- Windows uses the **Direct3D 12** driver (set in `project.godot`); other platforms use Godot's defaults
-
-No plugins, add-ons, or external dependencies.
+- **Godot 4.6** (scenes use the 4.6 `unique_id` format)
+- A GPU supported by the Forward+ renderer
+- No plugins or add-ons
 
 ---
 
 ## 5. Quick Start
 
-### 5.1 Open and run
-
 1. Install Godot 4.6 from [godotengine.org](https://godotengine.org/download).
 2. Clone the repository:
 
    ```bash
-   git clone <your-repo-url>
-   cd apex-tactics
+   git clone https://github.com/JoshuaOmosa/apex-tactics.git
    ```
 
-3. In the Godot Project Manager, click **Import**, then select `project.godot`.
-4. Open `scenes/Main.tscn`.
-5. Press **F6** (Run Current Scene).
+3. In the Godot Project Manager, click **Import** and select `project.godot`.
+4. Press **F5**. The main scene is `scenes/Main.tscn`.
+5. Left-click on the far side of the stone block and watch the unit route around it.
 
-### 5.2 Important: pressing F5 runs the wrong scene
-
-`project.godot` currently sets the main scene to `uid://cdyvdhf6bcl3u`, which is the UID of **`Actor.tscn`**, not `Main.tscn`. Pressing **F5** therefore launches only the actor with no level and no click handling, so clicking does nothing.
-
-To fix it, go to **Project > Project Settings > Application > Run > Main Scene** and select `res://scenes/Main.tscn`. In `project.godot` the line becomes:
-
-```ini
-run/main_scene="uid://xadoct2alt5c"
-```
-
-```mermaid
-flowchart LR
-    F5["Press F5"] --> Cur{"Main Scene<br/>setting"}
-    Cur -->|"Actor.tscn (current)"| Bad["Actor only<br/>clicks ignored"]
-    Cur -->|"Main.tscn (fixed)"| Good["Full level<br/>click to move works"]
-```
+To see the mesh while playing, enable **Debug > Visible Navigation** in the editor.
 
 ---
 
@@ -218,9 +171,8 @@ flowchart LR
 
 | Input | Action |
 |---|---|
-| Any mouse button (press) | Set the actor's destination to the cursor position |
-
-Any mouse button works because the check is `InputEventMouseButton` with `pressed`, with no button filter.
+| Left click | Move to the cursor (or the nearest reachable point) |
+| Right click | Stop where you are |
 
 ---
 
@@ -228,91 +180,52 @@ Any mouse button works because the check is `InputEventMouseButton` with `presse
 
 ```text
 apex-tactics/
-├── project.godot          # Engine config (Godot 4.6, Forward+, D3D12 on Windows)
+├── project.godot          # Main scene: scenes/Main.tscn
+├── LICENSE
 ├── README.md
-├── .editorconfig          # UTF-8
-├── .gitattributes         # LF line endings
-├── .gitignore             # .godot/, export presets, OS files
-├── assets/
-│   ├── icon.svg           # Project icon, also used as actor sprite and tile atlas
-│   └── icon.svg.import
+├── assets/icon.svg        # Sprite and tile atlas
 ├── scenes/
-│   ├── Main.tscn          # Level: navigation region, tile map, actor instance
-│   └── Actor.tscn         # Movable unit: body, sprite, collision, nav agent
+│   ├── Main.tscn          # Level: navigation mesh, tile map, actor
+│   └── Actor.tscn         # Unit: body, sprite, collision, nav agent
 └── src/
-    ├── main.gd            # Click handling
-    └── actor.gd           # Path-following movement
-```
-
-### File relationships
-
-```mermaid
-flowchart TD
-    PG["project.godot"] -.->|"main_scene"| AT["Actor.tscn (currently)"]
-    MT["Main.tscn"] -->|"instances"| AT
-    MT -->|"script"| MG["main.gd"]
-    AT -->|"script"| AG["actor.gd"]
-    MT -->|"texture"| IC["icon.svg"]
-    AT -->|"texture"| IC
-    MG -->|"calls set_target"| AG
+    ├── main.gd            # Orders and destination marker
+    └── actor.gd           # Path following with avoidance
 ```
 
 ---
 
 ## 8. Code Walkthrough
 
-### `src/main.gd`
-
-```gdscript
-extends Node2D
-
-@onready var player = $Actor
-
-func _unhandled_input(event):
-    if event is InputEventMouseButton and event.pressed:
-        print("Click detected at: ", get_global_mouse_position())
-        player.set_target(get_global_mouse_position())
-```
-
-- `$Actor` must match the instanced node's name in `Main.tscn`.
-- `_unhandled_input` only fires for input that no UI control consumed, which is the right place for world clicks.
-- `get_global_mouse_position()` converts the screen click into world coordinates.
-
 ### `src/actor.gd`
 
 ```gdscript
-extends CharacterBody2D
+signal arrived
 
-var speed = 300.0
-@onready var nav_agent = $NavigationAgent2D
+@export var speed: float = 300.0
 
-func _physics_process(_delta):
-    if nav_agent.is_navigation_finished():
-        return
+func _ready() -> void:
+	nav_agent.avoidance_enabled = true
+	nav_agent.max_speed = speed
+	nav_agent.velocity_computed.connect(_on_velocity_computed)
+	nav_agent.navigation_finished.connect(func(): arrived.emit())
 
-    print("Moving toward: ", nav_agent.get_next_path_position())
+func _physics_process(_delta: float) -> void:
+	if nav_agent.is_navigation_finished():
+		velocity = Vector2.ZERO
+		return
+	var next_pos := nav_agent.get_next_path_position()
+	nav_agent.velocity = global_position.direction_to(next_pos) * speed
 
-    var next_path_pos = nav_agent.get_next_path_position()
-    var direction = (next_path_pos - global_position).normalized()
-
-    velocity = direction * speed
-    move_and_slide()
-
-func set_target(target_pos):
-    nav_agent.target_position = target_pos
+func _on_velocity_computed(safe_velocity: Vector2) -> void:
+	velocity = safe_velocity
+	move_and_slide()
 ```
 
-- `set_target` is the actor's public API. Setting `target_position` triggers a new path query.
-- The actor uses `motion_mode = 1` (**Floating**) on its `CharacterBody2D`, the right mode for top-down movement with no gravity or floor.
+The actor's public API is `set_target()`, `stop()`, `final_destination()`, and the `arrived` signal. Its parent never touches the navigation agent directly. `speed` is `@export`ed, so it can be tuned per unit in the inspector.
 
-### Actor scene details
+### `src/main.gd`
 
-| Node | Notes |
-|---|---|
-| `CharacterBody2D` (root) | Floating motion mode, script `actor.gd` |
-| `Sprite2D` | `icon.svg`, offset 7 px down |
-| `NavigationAgent2D` | All properties at engine defaults |
-| `CollisionShape2D` | Circle, radius about 10.3 px, offset toward the sprite's lower half |
+Handles left/right clicks in `_unhandled_input` (so UI added later can consume clicks first). After an order it asks the actor for its `final_destination()` and draws a marker in `_draw()`. The marker is cleared when `arrived` fires or the order is cancelled.
 
 ---
 
@@ -320,120 +233,35 @@ func set_target(target_pos):
 
 | Setting | Value | Where |
 |---|---|---|
-| Movement speed | `300.0` px/s | `actor.gd` (`speed`) |
-| Motion mode | Floating | `Actor.tscn` |
-| Collision shape | Circle, r about 10.3 | `Actor.tscn` |
-| Navigation mesh | 1 polygon, 4 vertices | `Main.tscn` (`NavigationPolygon`) |
-| Tile grid | 17 x 14, 238 tiles | `Main.tscn` (`TileMapLayer`) |
-| Tile atlas | `icon.svg` cut into an 8 x 8 grid of cells | `Main.tscn` (`TileSet`) |
-| Renderer | Forward+ | `project.godot` |
-| Windows graphics driver | Direct3D 12 | `project.godot` |
-| 3D physics engine | Jolt | `project.godot` (unused by this 2D project) |
-
-Nothing on the `NavigationAgent2D` is overridden, so its behavior is governed by Godot's defaults (for example, `avoidance_enabled` is off).
+| Movement speed | 300 px/s (`@export`) | `actor.gd` |
+| Avoidance | On | `actor.gd` `_ready()` |
+| Motion mode | Floating (top-down, no gravity) | `Actor.tscn` |
+| Navigation mesh | 4 convex polygons around one hole | `Main.tscn` |
+| Tile grid | 17 × 14, 16 px tiles | `Main.tscn` |
 
 ---
 
-## 10. Known Issues
+## 10. Extending the Project
 
-Worth knowing before building on the project:
+**More units.** Instance `Actor.tscn` a few more times. Avoidance is already on, so they'll steer around each other. Add a selection rectangle in `main.gd` to give orders to a group.
 
-- **Wrong main scene.** F5 launches `Actor.tscn`, not `Main.tscn`. See [section 5.2](#52-important-pressing-f5-runs-the-wrong-scene).
-- **Engine version mismatch in older docs.** The previous README said Godot 4.3, but the project targets 4.6 and its scene format may not open in older versions.
-- **Tiles do not affect navigation.** The `TileSet` has no navigation or physics layers, so the 23 block tiles are decoration. Pathing is determined only by the single `NavigationPolygon`, which does not line up with the tile block.
-- **The walkable area is small.** The polygon covers about 114 x 114 px while the tile grid is roughly 272 x 224 px. A click outside the polygon typically sends the actor to the nearest reachable point on the mesh.
-- **No dynamic obstacle avoidance.** Avoidance (agents steering around each other) is off. The current behavior is pathfinding around static geometry only, which matters if you add more than one actor.
-- **Debug printing every frame.** `actor.gd` prints on every physics frame while moving, which floods the output panel and slows things down.
-- **Path position queried twice per frame.** `get_next_path_position()` is called twice in `_physics_process`. Godot's documentation says to call it once per physics frame, so the debug print should be removed or should reuse the stored value.
-- **Any mouse button triggers movement,** including the right and middle buttons and the wheel.
-- **No "high-performance" evidence.** The old README described the system as high-performance, but no benchmarks or profiling are included.
-- **No LICENSE file** is present in the repository.
+**Tiles as the source of truth.** Instead of the hand-built mesh, add a navigation layer to the `TileSet` and paint polygons on walkable tiles only. The `TileMapLayer` then registers them with the navigation server, and painting a new stone tile automatically becomes an obstacle.
+
+**Grid-snapped movement for turn-based play.** Snap the target to the tile centre with `TileMapLayer.local_to_map()` / `map_to_local()` and cap the path length to a unit's movement points.
 
 ---
 
-## 11. Extending the Project
+## 11. Roadmap
 
-### 11.1 Clean up the actor loop
-
-```gdscript
-func _physics_process(_delta):
-    if nav_agent.is_navigation_finished():
-        velocity = Vector2.ZERO
-        return
-
-    var next_pos = nav_agent.get_next_path_position()
-    velocity = global_position.direction_to(next_pos) * speed
-    move_and_slide()
-```
-
-This calls the path query once, removes the print, and zeroes velocity when finished.
-
-### 11.2 Left-click only
-
-```gdscript
-func _unhandled_input(event):
-    if event is InputEventMouseButton and event.pressed \
-            and event.button_index == MOUSE_BUTTON_LEFT:
-        player.set_target(get_global_mouse_position())
-```
-
-### 11.3 Make tiles real obstacles
-
-```mermaid
-flowchart TD
-    A["Open the TileSet"] --> B["Add a Navigation layer"]
-    B --> C["Paint navigation polygons<br/>on walkable tiles only"]
-    C --> D["Leave block tiles empty"]
-    D --> E["Tiles now define<br/>what is walkable"]
-```
-
-Once the walkable tiles carry navigation polygons, the `TileMapLayer` registers them with the navigation server and the hand-drawn `NavigationPolygon` can be removed. Tiles left without one become obstacles the path routes around.
-
-### 11.4 Multiple actors with avoidance
-
-```gdscript
-func _ready():
-    nav_agent.avoidance_enabled = true
-    nav_agent.velocity_computed.connect(_on_velocity_computed)
-
-func _physics_process(_delta):
-    if nav_agent.is_navigation_finished():
-        return
-    var next_pos = nav_agent.get_next_path_position()
-    nav_agent.velocity = global_position.direction_to(next_pos) * speed
-
-func _on_velocity_computed(safe_velocity: Vector2):
-    velocity = safe_velocity
-    move_and_slide()
-```
-
-With avoidance on, the agent proposes a velocity and Godot returns an adjusted one that steers around other agents.
+- [x] Path around static obstacles
+- [x] Destination marker, left-click move, right-click stop
+- [x] Local avoidance ready for multiple units
+- [ ] Multiple units with box selection
+- [ ] Tile-painted navigation layer
+- [ ] Grid-snapped, turn-based movement with movement points
 
 ---
 
-## 12. Roadmap
+## 12. License
 
-Suggested next steps toward a tactics game:
-
-```mermaid
-flowchart LR
-    A["Fix main scene<br/>and cleanup"] --> B["Tile-based<br/>navigation"]
-    B --> C["Multiple units<br/>with avoidance"]
-    C --> D["Unit selection<br/>and commands"]
-    D --> E["Turn or<br/>real-time tactics"]
-```
-
-- [ ] Set `Main.tscn` as the main scene
-- [ ] Remove debug prints and the duplicate path query
-- [ ] Add navigation layers to the `TileSet`
-- [ ] Enable and tune agent avoidance
-- [ ] Add a path or destination marker
-- [ ] Add selection of multiple units
-
----
-
-## 13. License
-
-No license file is included yet. Add one (for example MIT) before publishing.
-
-The Godot icon used as the sprite and tile atlas is part of Godot's default project template; check Godot's branding terms if you distribute the project.
+MIT. See [LICENSE](LICENSE). The sprite and tile atlas use Godot's default `icon.svg`.
